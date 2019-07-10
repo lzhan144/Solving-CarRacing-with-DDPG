@@ -2,6 +2,7 @@ import torch
 import gym
 import numpy as np
 from TD3 import TD3
+from DDPG import DDPG
 from utils import NaivePrioritizedBuffer
 import os
 import roboschool, gym
@@ -9,6 +10,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import torch.optim as optim
 import Box2D
+import pdb
 
 import torch
 import torch.nn as nn
@@ -16,11 +18,16 @@ from torch.autograd import Variable
 import torch.nn.functional as F
 from utils import DrawLine
 import math
+import argparse
 
 from torch.distributions import Beta
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+parser = argparse.ArgumentParser(description='Train a TD3 agent for the CarRacing-v0')
+parser.add_argument('policy', help='Choose policy')
+args = parser.parse_args()
 
 
 class Env():
@@ -104,18 +111,23 @@ def train(env):
     gamma = 0.99  # discount for future rewards
     batch_size = 100  # num of transitions sampled from replay buffer
     lr = 0.001
-    exploration_noise = 0.1
+    exploration_noise = 0.5
     polyak = 0.995  # target policy update parameter (1-tau)
     policy_noise = 0.2  # target policy smoothing noise
     noise_clip = 0.5
     policy_delay = 2  # delayed policy updates parameter
-    max_episodes = int(1e6)  # max num of episodes
-    max_timesteps = 2000  # max timesteps in one episode
+    max_episodes = int(1e8)  # max num of episodes
+    max_timesteps = 500  # max timesteps in one episode
     save_every = 100  # model saving interal
     img_stack = 4  # number of image stacks together
     action_repeat = 8  # repeat action in N frames
     max_size = 1e6
     vis = True
+
+    """ parameters for epsilon declay """
+    epsilon_start = 1
+    epsilon_final = 0.01
+    decay_rate = max_episodes / 50
 
     """ beta Prioritized Experience Replay"""
     beta_start = 0.4
@@ -129,11 +141,14 @@ def train(env):
     ###################################
 
     env = Env(env_name, random_seed, img_stack, action_repeat)
+    # print("env")
     action_dim = env.action_space.shape[0]
     # if vis:
     #     draw_reward = DrawLine(env="car", title="PPO", xlabel="Episode", ylabel="Moving averaged episode reward")
-
-    policy = TD3(action_dim, img_stack)
+    if args.policy == 'TD3':
+        policy = TD3(action_dim, img_stack)
+    if args.policy == 'DDPG':
+        policy = DDPG(action_dim, img_stack)
     replay_buffer = NaivePrioritizedBuffer(int(max_size))
 
     if random_seed:
@@ -152,6 +167,7 @@ def train(env):
     # training procedure:
     for episode in range(1, max_episodes + 1):
         state = env.reset()
+        # print("here")
         episode_timesteps = 0
         score = 0
 
@@ -159,12 +175,14 @@ def train(env):
             # select action and add exploration noise:
             #             print("state: " + str(state))
             action = policy.select_action(state)
+            # print("action: " + str(action))
+            exploration_noise = (epsilon_start - epsilon_final) * math.exp(-1. * total_timesteps / decay_rate)
             action = action + np.random.normal(0, exploration_noise, size=action_dim)
             action = action.clip(env.action_space.low, env.action_space.high)
             #             print("action clipped: " + str(action))
 
             # take action in env:
-            next_state, reward, done, die = env.step(action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]))
+            next_state, reward, done, die = env.step( action * np.array([2., 1., 1.]) + np.array([-1., 0., 0.]) )
             #             print("state: " +str(next_state))
             env.render()
             replay_buffer.add(state, next_state, action, reward, float(done))
@@ -187,7 +205,7 @@ def train(env):
         if episode % log_interval == 0:
             # if vis:
             #     draw_reward(xdata = episode, ydata = running_score)
-            log_f.write('Ep {}\tLast score: {:.2f}\tMoving average score: {:.2f}'.format(episode, score, running_score))
+            log_f.write('Ep {}\tLast score: {:.2f}\tMoving average score: {:.2f}\n'.format(episode, score, running_score))
             log_f.flush()
             print('Ep {}\tLast score: {:.2f}\tMoving average score: {:.2f}'.format(episode, score, running_score))
 
@@ -207,5 +225,5 @@ def train(env):
             policy.save(directory, filename)
 
 
-### main function
-train('CarRacing-v0')
+if __name__ == "__main__":
+    train('CarRacing-v0')

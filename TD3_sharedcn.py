@@ -12,8 +12,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Implementation of Twin Delayed Deep Deterministic Policy Gradients (TD3)
 # Paper: https://arxiv.org/abs/1802.09477
 
-feat_size = 1
-latent_dim = 512
+feat_size = 2
+latent_dim = 256
 
 ''' Utilities '''
 
@@ -28,33 +28,52 @@ class Net(nn.Module):
     def __init__(self, action_dim, img_stack):
         super(Net, self).__init__()
         self.encoder = torch.nn.ModuleList([  ## input size:[96, 96]
-            torch.nn.Conv2d(img_stack, 16, 5, 2, padding=2),  ## output size: [16, 48, 48]
+            torch.nn.Conv2d(img_stack, 16, 5, 4, padding=2),  ## output size: [16, 24, 24]
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(16),
-            torch.nn.Conv2d(16, 32, 5, 2, padding=2),  ## output size: [32, 24, 24]
+            torch.nn.Conv2d(16, 32, 5, 4, padding=2),  ## output size: [32, 6, 6]
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(32),
-            torch.nn.Conv2d(32, 64, 5, 2, padding=2),  ## output size: [64, 12, 12]
+            torch.nn.Conv2d(32, 64, 5, 2, padding=2),  ## output size: [64, 3, 3]
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(64),
-            torch.nn.Conv2d(64, 128, 5, 2, padding=2),  ## output size: [128, 6, 6]
+            torch.nn.Conv2d(64, 128, 5, 2, padding=2),  ## output size: [128, 2, 2]
             torch.nn.ReLU(),
             torch.nn.BatchNorm2d(128),
-            torch.nn.Conv2d(128, 256, 5, 2, padding=2),  ## output size: [256, 3, 3]
-            torch.nn.ReLU(),
-            torch.nn.BatchNorm2d(256),
-            torch.nn.Conv2d(256, 512, 5, 2, padding=2),  ## output size: [512, 1, 1]
-            torch.nn.ReLU(),
-            torch.nn.BatchNorm2d(512),
-            Flatten(),  ## output: 512
+            torch.nn.Conv2d(128, 256, 5, 2, padding=2),  ## output size: [256, 1, 1]
+            Flatten(),
         ])
+
+
+            # torch.nn.Conv2d(img_stack, 16, 5, 2, padding=2),  ## output size: [16, 48, 48]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(16),
+            # torch.nn.Conv2d(16, 32, 5, 2, padding=2),  ## output size: [32, 24, 24]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(32),
+            # torch.nn.Conv2d(32, 64, 5, 2, padding=2),  ## output size: [64, 12, 12]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(64),
+            # torch.nn.Conv2d(64, 128, 5, 2, padding=2),  ## output size: [128, 6, 6]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(128),
+            # torch.nn.Conv2d(128, 256, 5, 2, padding=2),  ## output size: [256, 3, 3]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(256),
+            # torch.nn.Conv2d(256, 512, 5, 2, padding=2),  ## output size: [512, 1, 1]
+            # torch.nn.ReLU(),
+            # torch.nn.BatchNorm2d(512),
+
 
         self.actor = torch.nn.ModuleList([
             torch.nn.Linear(latent_dim, 30),
             torch.nn.ReLU(),
             # torch.nn.BatchNorm1d(30),
-            torch.nn.Linear(30, action_dim)
         ])
+
+        self.action_out_1 = torch.nn.Linear(30, int(action_dim / 3))
+        self.action_out_2 = torch.nn.Linear(30, int(action_dim / 3) * 2)
+
 
         self.critic_1 = torch.nn.ModuleList([
             torch.nn.Linear(latent_dim + action_dim, 30),
@@ -69,23 +88,22 @@ class Net(nn.Module):
             # torch.nn.BatchNorm1d(30),
             torch.nn.Linear(30, 1),
         ])
-        self.apply(self._weight_init)
 
-    @staticmethod
-    def _weights_init(m):
-        if isinstance(m, nn.Conv2d):
-            nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
-            nn.init.constant_(m.bias, 0.1)
 
     def forward(self, x, u):
 
         for layer in self.encoder:
             x = layer(x)
+            # print("x size: " + str(x.size()))
 
         ## actor branch
         action = x
         for layer in self.actor:
             action = layer(action)
+        action_out1 = torch.tanh(self.action_out_1(action))
+        action_out2 = torch.sigmoid(self.action_out_2(action))
+
+        action_out = torch.cat((action_out1, action_out2), 1)
 
         ## critic branch
         x = torch.cat([x,u],1)
@@ -96,7 +114,7 @@ class Net(nn.Module):
         for layer in self.critic_2:
             value_2 = layer(value_2)
 
-        return action, value_1, value_2
+        return action_out, value_1, value_2
 
     def Q1(self, x, u):
         for layer in self.encoder:
@@ -124,10 +142,8 @@ class TD3(object):
 
     def select_action(self, state):
         state = state.float().to(device)
-        with torch.no_grad():
-            pdb.set_trace()
-            fake_action = torch.FloatTensor(np.zeros((1,self.action_dim))).to(device)  ## hold the position
-            action,_,_ = self.net(state, fake_action)
+        fake_action = torch.FloatTensor(np.zeros((1,self.action_dim))).to(device)  ## hold the position
+        action,_,_ = self.net(state, fake_action)
         return action.cpu().data.numpy().flatten()
 
 
